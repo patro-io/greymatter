@@ -52,6 +52,29 @@ function checkOrphanedNodes(db, project) {
   return findings;
 }
 
+function checkNodesWithoutFileHashes(db, project) {
+  const findings = [];
+  const clause = project ? 'AND n.project = ?' : '';
+  const params = project ? [project] : [];
+
+  const rows = db.prepare(`
+    SELECT DISTINCT n.project, n.file
+    FROM nodes n
+    LEFT JOIN file_hashes fh ON fh.project = n.project AND fh.file = n.file
+    WHERE fh.file IS NULL
+    ${clause}
+    ORDER BY n.project, n.file
+  `).all(...params);
+
+  for (const row of rows) {
+    findings.push(warn(
+      `Node rows without paired file_hashes row: ${row.project}/${row.file}`,
+      row.file
+    ));
+  }
+  return findings;
+}
+
 function checkStaleDocumentaryEdges(db, project, workspace) {
   const findings = [];
   const clause = project ? 'AND e.source_project = ?' : '';
@@ -167,6 +190,29 @@ function checkFileHashMismatches(db, project, workspaceDir) {
   return findings;
 }
 
+function checkStaleFileHashes(db, project, workspaceDir) {
+  const findings = [];
+  if (!workspaceDir) return findings;
+
+  const clause = project ? 'WHERE project = ?' : '';
+  const params = project ? [project] : [];
+
+  const rows = db.prepare(`
+    SELECT project, file FROM file_hashes ${clause} ORDER BY project, file
+  `).all(...params);
+
+  for (const row of rows) {
+    const absPath = path.join(workspaceDir, row.project, row.file);
+    if (!fs.existsSync(absPath)) {
+      findings.push(warn(
+        `Stale hash: ${row.project}/${row.file} no longer exists on disk`,
+        row.file
+      ));
+    }
+  }
+  return findings;
+}
+
 function checkOrphanedDocumentation(db, project) {
   const findings = [];
   const clause = project ? 'AND n.project = ?' : '';
@@ -222,9 +268,15 @@ function main() {
     return args[idx + 1];
   }
 
+  function hasFlag(name) {
+    return args.includes(name);
+  }
+
   const project = flag('--project');
   const dbPath = flag('--db') || DEFAULT_DB;
   const workspaceDir = flag('--workspace');
+  const repair = hasFlag('--repair');
+  const yes = hasFlag('--yes');
 
   if (!fs.existsSync(dbPath)) {
     console.error(`graph.db not found at ${dbPath}`);
@@ -232,15 +284,62 @@ function main() {
     process.exit(1);
   }
 
+  let graphDb;
   let db;
   try {
-    const graphDb = new GraphDB(dbPath);
+    graphDb = new GraphDB(dbPath);
     db = graphDb.db;
   } catch (err) {
     console.error(`Failed to open database: ${err.message}`);
     process.exit(1);
   }
 
+  if (repair) {
+    const projects = project
+      ? [project]
+      : db.prepare(
+          'SELECT DISTINCT project FROM nodes UNION SELECT DISTINCT project FROM file_hashes'
+        ).all().map(r => r.project);
+
+    const plan = {};
+    for (const p of projects) {
+      plan[p] = {
+        orphans: checkNodesWithoutFileHashes(db, p),
+        stale: checkStaleFileHashes(db, p, workspaceDir),
+      };
+    }
+
+    if (!yes) {
+      console.log('# Plan only — re-run with --yes to apply.');
+      for (const p of projects) {
+        console.log(`\n${p}:`);
+        console.log(`  orphans: ${plan[p].orphans.length}`);
+        console.log(`  stale_hashes: ${plan[p].stale.length}`);
+      }
+      graphDb.close();
+      process.exit(0);
+    }
+
+    for (const p of projects) {
+      let orphansPurged = 0;
+      let staleHashesPurged = 0;
+      for (const f of plan[p].orphans) {
+        graphDb.purgeFile(p, f.file);
+        orphansPurged++;
+      }
+      for (const f of plan[p].stale) {
+        graphDb.purgeFile(p, f.file);
+        staleHashesPurged++;
+      }
+      console.log(`${p}:`);
+      console.log(`  orphans_purged: ${orphansPurged}`);
+      console.log(`  stale_hashes_purged: ${staleHashesPurged}`);
+    }
+    graphDb.close();
+    process.exit(0);
+  }
+
+  // ── Default report path (existing behavior unchanged) ──
   const allFindings = [
     ...checkMissingEdgeTypeRegistrations(db, project),
     ...checkOrphanedAnnotations(db),
@@ -282,7 +381,9 @@ if (require.main === module) main();
 
 module.exports = {
   checkOrphanedNodes,
+  checkNodesWithoutFileHashes,
   checkStaleDocumentaryEdges,
+  checkStaleFileHashes,
   checkMissingEdgeTypeRegistrations,
   checkOrphanedAnnotations,
   checkFileHashMismatches,

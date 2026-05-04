@@ -41,7 +41,7 @@ describe('classify.js CLI', () => {
     fs.writeFileSync(path.join(projectDir, 'b.js'),
       "function other() {\n  console.log('hi');\n}\nmodule.exports = { other };\n"
     );
-    scanProject(projectDir, 'demo', db);
+    scanProject(projectDir, 'demo', db, {});
     db.close();
   });
 

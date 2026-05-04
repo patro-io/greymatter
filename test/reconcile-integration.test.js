@@ -31,7 +31,7 @@ describe('reconcileProject integration', () => {
     fs.writeFileSync(path.join(tmpProject, 'c.js'), `'use strict';\nfunction doC() { return 42; }\nmodule.exports = { doC };\n`);
 
     // Baseline scan
-    extractFiles({ db, project: 'test-proj', rootPath: tmpProject });
+    extractFiles({ db, project: 'test-proj', rootPath: tmpProject, config: {} });
     db.setProjectRoot('test-proj', tmpProject);
   });
 

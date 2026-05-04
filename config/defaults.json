@@ -35,10 +35,9 @@
     "extra_patterns": []
   },
   "mcp_server": false,
-  "mcp_server_log_path": "~/.claude/greymatter/tmp/mcp-server.log",
   "tmp_cleanup_max_age_hours": 24,
   "spec_check": {
-    "preamble": false,
+    "preamble": true,
     "command_log_path": null
   },
   "test_alerts": {

@@ -78,15 +78,15 @@ Usage:
   spec-check.js --chunk-content <plan> <n>         Print chunk assignment for chunk n
   spec-check.js --dispatch <plan>                  Write every chunk's assignment to <plan-dir>/chunks/
 
-By default, --chunk-content and --dispatch emit just plan header + observations
-+ chunk body, and --dispatch writes no external log. To opt into the standing-
-rules preamble and the command-log append, set spec_check in
-~/.claude/greymatter/config.json:
+By default, --chunk-content and --dispatch emit the full assignment: standing-
+rules preamble + plan header + observations + chunk body, and --dispatch
+appends read instructions to ~/claude/command-log.txt. To override defaults
+globally, set spec_check in ~/.claude/greymatter/config.json:
 
   {
     "spec_check": {
-      "preamble": true,
-      "command_log_path": "/abs/path/to/command-log.txt"
+      "preamble": false,
+      "command_log_path": ""
     }
   }
 
@@ -151,7 +151,9 @@ async function main(argv) {
       const observations = readObservationsSync(planPath);
       const config = loadConfig();
       const specCheckConfig = config.spec_check || {};
-      const preamble = opts.preamble !== null ? opts.preamble : Boolean(specCheckConfig.preamble);
+      const preamble = opts.preamble !== null
+        ? opts.preamble
+        : ('preamble' in specCheckConfig ? Boolean(specCheckConfig.preamble) : true);
       const out = assembleAssignment({
         planPath,
         planContents: contents,
@@ -171,12 +173,18 @@ async function main(argv) {
       const observations = readObservationsSync(planPath);
       const config = loadConfig();
       const specCheckConfig = config.spec_check || {};
-      const preamble = opts.preamble !== null ? opts.preamble : Boolean(specCheckConfig.preamble);
+      const preamble = opts.preamble !== null
+        ? opts.preamble
+        : ('preamble' in specCheckConfig ? Boolean(specCheckConfig.preamble) : true);
       let commandLogPath;
       if (opts.commandLogPath !== undefined) {
         commandLogPath = opts.commandLogPath === '' ? null : opts.commandLogPath;
+      } else if (specCheckConfig.command_log_path === '') {
+        commandLogPath = null;
+      } else if (specCheckConfig.command_log_path) {
+        commandLogPath = specCheckConfig.command_log_path;
       } else {
-        commandLogPath = specCheckConfig.command_log_path || null;
+        commandLogPath = path.join(os.homedir(), 'claude', 'command-log.txt');
       }
 
       const payloads = computeDispatchPayloads({ planPath, planContents: contents, observations, preamble });

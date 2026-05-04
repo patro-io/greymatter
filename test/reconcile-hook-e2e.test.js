@@ -62,7 +62,7 @@ describe('reconcile-hook e2e', () => {
 
       const dbPath = path.join(dataDir, 'graph.db');
       const db = new GraphDB(dbPath);
-      scanProject(projectDir, 'testpkg', db);
+      scanProject(projectDir, 'testpkg', db, {});
       db.setProjectRoot('testpkg', projectDir);
       db.close();
 
@@ -124,7 +124,7 @@ describe('reconcile-hook e2e', () => {
 
       const dbPath = path.join(dataDir, 'graph.db');
       const db = new GraphDB(dbPath);
-      scanProject(projectDir, 'gitpkg', db);
+      scanProject(projectDir, 'gitpkg', db, {});
       db.setProjectRoot('gitpkg', projectDir);
       db.updateLastScanSha('gitpkg', sha1);
       // Set file2's updated_at to the past so mtime check triggers
@@ -172,7 +172,7 @@ describe('reconcile-hook e2e', () => {
 
       const dbPath = path.join(dataDir, 'graph.db');
       const db = new GraphDB(dbPath);
-      scanProject(projectDir, 'cleanpkg', db);
+      scanProject(projectDir, 'cleanpkg', db, {});
       db.setProjectRoot('cleanpkg', projectDir);
       // Push updated_at 1 hour into the future so mtime check doesn't trigger
       db.db.prepare(
@@ -217,7 +217,7 @@ describe('reconcile-hook e2e', () => {
       writeJsFile(projectDir, 'rooted.js');
       const dbPath = path.join(dataDir, 'graph.db');
       const db = new GraphDB(dbPath);
-      scanProject(projectDir, 'rootedpkg', db);
+      scanProject(projectDir, 'rootedpkg', db, {});
       db.setProjectRoot('rootedpkg', projectDir);
       // Seed an orphan project with NULL root_path
       db.db.prepare(

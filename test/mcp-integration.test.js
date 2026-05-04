@@ -75,7 +75,7 @@ function seedDb() {
   );
 
   const db = new GraphDB(dbPath);
-  scanProject(projectDir, 'myproj', db);
+  scanProject(projectDir, 'myproj', db, {});
   db.close();
 }
 

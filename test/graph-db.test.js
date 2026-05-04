@@ -249,3 +249,40 @@ describe('GraphDB', () => {
     assert.equal(db.getProjectRoot('legacy'), '/tmp/legacy');
   });
 });
+
+describe('getOrphanNodeFilesForProject', () => {
+  let dbPath, db;
+
+  beforeEach(() => {
+    dbPath = path.join(__dirname, `gd-orphan-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    db = new GraphDB(dbPath);
+  });
+
+  afterEach(() => {
+    db.close();
+    try { fs.unlinkSync(dbPath); } catch {}
+    try { fs.unlinkSync(dbPath + '-wal'); } catch {}
+    try { fs.unlinkSync(dbPath + '-shm'); } catch {}
+  });
+
+  it('returns only files present in nodes but absent from file_hashes', () => {
+    db.upsertNode({ project: 'p', file: 'paired.js', name: 'paired', type: 'function', line: 1 });
+    db.setFileHash('p', 'paired.js', 'hash-a');
+    db.setFileHash('p', 'hash-only.js', 'hash-b');
+    db.upsertNode({ project: 'p', file: 'orphan.js', name: 'orphan', type: 'function', line: 1 });
+    db.upsertNode({ project: 'other', file: 'other-orphan.js', name: 'x', type: 'function', line: 1 });
+
+    const result = db.getOrphanNodeFilesForProject('p');
+    assert.deepEqual(result.sort(), ['orphan.js']);
+  });
+
+  it('deduplicates when a file has multiple orphan node rows', () => {
+    db.upsertNode({ project: 'p', file: 'orphan.js', name: 'a', type: 'function', line: 1 });
+    db.upsertNode({ project: 'p', file: 'orphan.js', name: 'b', type: 'function', line: 5 });
+    assert.deepEqual(db.getOrphanNodeFilesForProject('p'), ['orphan.js']);
+  });
+
+  it('returns [] when project has no nodes', () => {
+    assert.deepEqual(db.getOrphanNodeFilesForProject('empty'), []);
+  });
+});

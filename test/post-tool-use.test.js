@@ -39,7 +39,7 @@ describe('post-tool-use hook', () => {
       "function original() { return 1; }\nmodule.exports = { original };\n"
     );
     const db = new GraphDB(dbPath);
-    scanProject(projectDir, 'demo', db);
+    scanProject(projectDir, 'demo', db, {});
     db.close();
   });
 

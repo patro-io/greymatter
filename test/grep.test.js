@@ -38,7 +38,7 @@ describe('grep.js CLI', () => {
     );
 
     const db = new GraphDB(dbPath);
-    scanProject(projectDir, 'demo', db);
+    scanProject(projectDir, 'demo', db, {});
     db.close();
   });
 

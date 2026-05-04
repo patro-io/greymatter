@@ -186,7 +186,7 @@ describe('PolicyEngine', () => {
       fs.writeFileSync(require('path').join(tmpDir, 'app.js'), 'module.exports = {};');
 
       const { extractFiles } = require('../scripts/scan');
-      extractFiles({ db, project: 'pe-reg', rootPath: tmpDir });
+      extractFiles({ db, project: 'pe-reg', rootPath: tmpDir, config: {} });
 
       const rows = db.db.prepare('SELECT * FROM nodes WHERE project = ? AND file = ?').all('pe-reg', 'production.env');
       assert.equal(rows.length, 0, 'production.env must never reach nodes — policy-engine scope reduction regression');

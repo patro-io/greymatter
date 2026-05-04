@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
 const { GraphDB } = require('../lib/graph-db');
 const { SEED_EDGE_TYPES } = require('../lib/edge-types');
 const {
@@ -13,6 +14,8 @@ const {
   checkOrphanedAnnotations,
   checkStaleDocumentaryEdges,
   checkFileHashMismatches,
+  checkNodesWithoutFileHashes,
+  checkStaleFileHashes,
   formatItem,
 } = require('../scripts/audit');
 
@@ -22,6 +25,12 @@ function makeTmp() {
 
 function tmpDbPath() {
   return path.join(os.tmpdir(), `gm-audit-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+}
+
+function cleanupDb(p) {
+  try { fs.unlinkSync(p); } catch {}
+  try { fs.unlinkSync(p + '-wal'); } catch {}
+  try { fs.unlinkSync(p + '-shm'); } catch {}
 }
 
 describe('audit.formatItem', () => {
@@ -245,5 +254,117 @@ describe('audit.checkFileHashMismatches', () => {
     const actualHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
     graphDb.setFileHash('p', 'a.js', actualHash);
     assert.deepEqual(checkFileHashMismatches(db, null, workspace), []);
+  });
+});
+
+describe('checkNodesWithoutFileHashes', () => {
+  let dbPath, gdb;
+  beforeEach(() => {
+    dbPath = tmpDbPath();
+    gdb = new GraphDB(dbPath);
+  });
+  afterEach(() => { gdb.close(); cleanupDb(dbPath); });
+
+  it('returns one finding per orphan file (not per orphan node)', () => {
+    gdb.upsertNode({ project: 'p', file: 'orphan.js', name: 'a', type: 'function', line: 1 });
+    gdb.upsertNode({ project: 'p', file: 'orphan.js', name: 'b', type: 'function', line: 5 });
+    gdb.upsertNode({ project: 'p', file: 'paired.js', name: 'c', type: 'function', line: 1 });
+    gdb.setFileHash('p', 'paired.js', 'h');
+
+    const findings = checkNodesWithoutFileHashes(gdb.db, 'p');
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].msg, /orphan\.js/);
+  });
+});
+
+describe('checkStaleFileHashes', () => {
+  let dbPath, gdb, workspace;
+  beforeEach(() => {
+    dbPath = tmpDbPath();
+    gdb = new GraphDB(dbPath);
+    workspace = path.join(__dirname, `t-audit-ws-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.mkdirSync(path.join(workspace, 'p'), { recursive: true });
+  });
+  afterEach(() => {
+    gdb.close();
+    cleanupDb(dbPath);
+    try { fs.rmSync(workspace, { recursive: true, force: true }); } catch {}
+  });
+
+  it('returns findings only for hashes whose disk path is gone', () => {
+    fs.writeFileSync(path.join(workspace, 'p', 'present.js'), 'x');
+    gdb.setFileHash('p', 'present.js', 'h1');
+    gdb.setFileHash('p', 'gone.js', 'h2');
+
+    const findings = checkStaleFileHashes(gdb.db, 'p', workspace);
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].msg, /gone\.js/);
+  });
+});
+
+describe('audit.js --repair / --yes', () => {
+  let dbPath, gdb, workspace;
+  const auditCli = path.resolve(__dirname, '..', 'scripts', 'audit.js');
+
+  beforeEach(() => {
+    dbPath = tmpDbPath();
+    gdb = new GraphDB(dbPath);
+    workspace = path.join(__dirname, `t-audit-ws-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.mkdirSync(path.join(workspace, 'p'), { recursive: true });
+
+    gdb.upsertNode({ project: 'p', file: 'orphan.js', name: 'o', type: 'function', line: 1 });
+    gdb.setFileHash('p', 'gone-hash.js', 'h');
+    gdb.close();
+  });
+  afterEach(() => {
+    cleanupDb(dbPath);
+    try { fs.rmSync(workspace, { recursive: true, force: true }); } catch {}
+  });
+
+  it('--repair without --yes is dry-run with plan banner and zero writes', () => {
+    const out = execFileSync('node',
+      [auditCli, '--repair', '--project', 'p', '--db', dbPath, '--workspace', workspace],
+      { encoding: 'utf8' }
+    );
+    assert.match(out, /# Plan only — re-run with --yes to apply\./);
+    assert.match(out, /orphans:\s*1/);
+    assert.match(out, /stale_hashes:\s*1/);
+
+    const verify = new GraphDB(dbPath);
+    const nodeCount = verify.db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE project = 'p'").get().n;
+    const hashCount = verify.db.prepare("SELECT COUNT(*) AS n FROM file_hashes WHERE project = 'p'").get().n;
+    verify.close();
+    assert.equal(nodeCount, 1);
+    assert.equal(hashCount, 1);
+  });
+
+  it('--repair --yes applies the purge and prints distinct counts', () => {
+    const out = execFileSync('node',
+      [auditCli, '--repair', '--yes', '--project', 'p', '--db', dbPath, '--workspace', workspace],
+      { encoding: 'utf8' }
+    );
+    assert.match(out, /orphans_purged:\s*1/);
+    assert.match(out, /stale_hashes_purged:\s*1/);
+
+    const verify = new GraphDB(dbPath);
+    const nodeCount = verify.db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE project = 'p'").get().n;
+    const hashCount = verify.db.prepare("SELECT COUNT(*) AS n FROM file_hashes WHERE project = 'p'").get().n;
+    verify.close();
+    assert.equal(nodeCount, 0);
+    assert.equal(hashCount, 0);
+  });
+
+  it('default invocation (no --repair) reports findings without writes', () => {
+    const out = execFileSync('node',
+      [auditCli, '--project', 'p', '--db', dbPath, '--workspace', workspace],
+      { encoding: 'utf8' }
+    );
+    assert.doesNotMatch(out, /orphans_purged/);
+    assert.doesNotMatch(out, /Plan only/);
+
+    const verify = new GraphDB(dbPath);
+    const nodeCount = verify.db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE project = 'p'").get().n;
+    verify.close();
+    assert.equal(nodeCount, 1, 'default audit must not mutate');
   });
 });

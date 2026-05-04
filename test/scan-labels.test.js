@@ -56,7 +56,7 @@ describe('Task 4.1: body_hash during scan', () => {
     fs.writeFileSync(path.join(tmpProject, 'greet.js'), src);
 
     db = new GraphDB(':memory:');
-    extractFiles({ db, project: 'test', rootPath: tmpProject });
+    extractFiles({ db, project: 'test', rootPath: tmpProject, config: {} });
 
     const rows = db.db.prepare(
       "SELECT name, body_hash FROM nodes WHERE project = 'test' AND file = 'greet.js' AND name = 'greet'"
@@ -98,7 +98,7 @@ describe('Task 4.1: body_hash during scan', () => {
 
       const db2 = new GraphDB(':memory:');
       try {
-        extractFiles({ db: db2, project: 'xttest', rootPath: tmpXtProject, extractorsDir: tmpExtractors });
+        extractFiles({ db: db2, project: 'xttest', rootPath: tmpXtProject, extractorsDir: tmpExtractors, config: {} });
 
         const row = db2.db.prepare(
           "SELECT body_hash FROM nodes WHERE project = 'xttest' AND name = 'stubNode'"
@@ -164,7 +164,7 @@ describe('Task 4.2: detectors run during scan', () => {
     ].join('\n'));
 
     db = new GraphDB(':memory:');
-    extractFiles({ db, project: 'testdet', rootPath: tmpProject });
+    extractFiles({ db, project: 'testdet', rootPath: tmpProject, config: {} });
   });
 
   after(() => {
@@ -236,7 +236,7 @@ describe('Task 4.3: re-scan idempotent', () => {
     ].join('\n'));
 
     db = new GraphDB(':memory:');
-    extractFiles({ db, project: 'idem', rootPath: tmpProject });
+    extractFiles({ db, project: 'idem', rootPath: tmpProject, config: {} });
   });
 
   after(() => {
@@ -249,7 +249,7 @@ describe('Task 4.3: re-scan idempotent', () => {
     const beforeCreatedAts = beforeRows.map(r => r.created_at);
 
     // Second scan of the same content
-    extractFiles({ db, project: 'idem', rootPath: tmpProject });
+    extractFiles({ db, project: 'idem', rootPath: tmpProject, config: {} });
 
     const afterRows = db.db.prepare("SELECT * FROM code_labels WHERE node_id IN (SELECT id FROM nodes WHERE project='idem')").all();
 
@@ -295,7 +295,7 @@ describe('Task 4.4: post-tool-use stale-marking and re-run', () => {
     fs.writeFileSync(path.join(tmpProject, 'auth.js'), authSrc);
 
     // Initial scan
-    extractFiles({ db, project: 'ptu', rootPath: tmpProject });
+    extractFiles({ db, project: 'ptu', rootPath: tmpProject, config: {} });
 
     const nodeRow = db.db.prepare(
       "SELECT id, body_hash FROM nodes WHERE project='ptu' AND name='authMiddleware'"
@@ -371,7 +371,7 @@ describe('Task 4.4: post-tool-use stale-marking and re-run', () => {
     ].join('\n');
     fs.writeFileSync(path.join(tmpProject, 'mw.js'), src);
 
-    extractFiles({ db, project: 'ptu2', rootPath: tmpProject });
+    extractFiles({ db, project: 'ptu2', rootPath: tmpProject, config: {} });
 
     const nodeRow = db.db.prepare(
       "SELECT id, body_hash FROM nodes WHERE project='ptu2' AND name='authMiddleware'"

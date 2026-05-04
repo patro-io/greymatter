@@ -11,7 +11,7 @@ const { SEED_EDGE_TYPES } = require('../lib/edge-types');
 const { loadConfig } = require('../lib/config');
 const { buildProjectContext } = require('../lib/reorientation');
 const bodyHash = require('../lib/body-hash');
-const { loadPolicy, isExcluded } = require('../lib/exclusion');
+const { loadPolicy, isExcluded, purgeExcluded, policyChangedSince } = require('../lib/exclusion');
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.svelte-kit', 'dist', 'build', 'coverage']);
 const SKIP_EXTENSIONS = new Set(['.db', '.db-wal', '.db-shm']);
@@ -60,211 +60,224 @@ function resolveImportPath(sourceFile, importTarget, projectDir) {
 // When null/undefined, behaves identically to the original scanProject (hash-based incremental).
 // extractorsDir: optional path to a custom extractors directory (used in tests).
 function extractFiles({ db, project, rootPath, forceFiles = null, extractorsDir, config }) {
+  if (config == null) {
+    throw new Error('extractFiles: config is required (load via loadConfig() at integration boundary)');
+  }
   const registry = extractorsDir ? new ExtractorRegistry(extractorsDir) : new ExtractorRegistry();
   const forceSet = forceFiles ? new Set(forceFiles) : null;
   const policy = loadPolicy(rootPath, config);
 
-  // Seed baseline edge types
-  for (const et of SEED_EDGE_TYPES) {
-    db.registerEdgeType(et);
-  }
-
-  const files = walkDir(rootPath, rootPath, registry, undefined, policy);
-  let filesScanned = 0;
-  let filesSkipped = 0;
-  let nodesCreated = 0;
-  let edgesCreated = 0;
-  let labelsWritten = 0;
-  const detectorsFired = new Set();
-
-  // fileNodeMaps: projectRelPath → Map(nodeName → nodeId)
-  // Built during first pass for all files (both changed and unchanged).
-  // Used in second pass for edge target resolution.
-  const fileNodeMaps = new Map();
-  const filesToProcess = []; // files that need edge insertion
-
-  // First pass: insert nodes, build fileNodeMaps
-  for (const absPath of files) {
-    const relPath = path.relative(rootPath, absPath);
-    const forced = forceSet !== null && forceSet.has(relPath);
-
-    // Defense in depth: never extract a forced-but-excluded file
-    if (isExcluded(absPath, policy)) continue;
-
-    let content;
-    try {
-      content = fs.readFileSync(absPath, 'utf8');
-    } catch {
-      // File unreadable (permissions, binary) — skip
-      continue;
+  let result;
+  const txn = db.db.transaction(() => {
+    if (policyChangedSince(db, project, policy)) {
+      purgeExcluded(db, project, policy);
     }
 
-    const hash = hashContent(content);
-    const existingHash = forced ? null : db.getFileHash(project, relPath);
-
-    if (!forced && existingHash === hash) {
-      filesSkipped++;
-      // Load existing node map from DB for edge resolution
-      const existingNodes = db.db.prepare(
-        'SELECT name, id FROM nodes WHERE project = ? AND file = ? ORDER BY id'
-      ).all(project, relPath);
-      const nameMap = new Map();
-      for (const n of existingNodes) nameMap.set(n.name, n.id);
-      fileNodeMaps.set(relPath, nameMap);
-      continue;
-    }
-
-    filesScanned++;
-    const extracted = registry.extractFile(content, relPath, project);
-
-    // Register edge types declared by this extractor
-    for (const et of extracted.edge_types || []) {
+    // Seed baseline edge types
+    for (const et of SEED_EDGE_TYPES) {
       db.registerEdgeType(et);
     }
 
-    // Clear stale nodes/edges
-    db.deleteFileEdges(project, relPath);
-    db.deleteFileNodes(project, relPath);
+    const files = walkDir(rootPath, rootPath, registry, undefined, policy);
+    let filesScanned = 0;
+    let filesSkipped = 0;
+    let nodesCreated = 0;
+    let edgesCreated = 0;
+    let labelsWritten = 0;
+    const detectorsFired = new Set();
 
-    // Insert new nodes; build name→id map for this file
-    const nameMap = new Map();
-    const fileExt = path.extname(relPath);
-    const extractorMod = registry.getExtractor(fileExt);
-    for (const node of extracted.nodes) {
-      const id = db.upsertNode(node);
-      if (!nameMap.has(node.name)) nameMap.set(node.name, id);
-      nodesCreated++;
+    // fileNodeMaps: projectRelPath → Map(nodeName → nodeId)
+    // Built during first pass for all files (both changed and unchanged).
+    // Used in second pass for edge target resolution.
+    const fileNodeMaps = new Map();
+    const filesToProcess = []; // files that need edge insertion
 
-      // Compute and store body_hash; follow-up UPDATE acceptable for v1 simplicity
-      const body = extractorMod && typeof extractorMod.extractBody === 'function'
-        ? extractorMod.extractBody(content, node)
-        : null;
-      node.body = body; // in-memory transient; not persisted to DB
-      const hash = bodyHash(body);
-      db.setNodeBodyHash(id, hash);
+    // First pass: insert nodes, build fileNodeMaps
+    for (const absPath of files) {
+      const relPath = path.relative(rootPath, absPath);
+      const forced = forceSet !== null && forceSet.has(relPath);
 
-      // Run heuristic detectors and write labels
-      const nodeLabels = runDetectorsForNode(extractorMod || {}, node, { project, filePath: relPath, content });
-      for (const label of nodeLabels) {
-        db.upsertLabel({
-          nodeId: id,
-          detectorId: label.detectorId,
-          term: label.term,
-          category: label.category,
-          descriptors: label.descriptors,
-          confidence: label.confidence,
-          source: 'heuristic',
-          bodyHashAtLabel: hash,
-        });
-        labelsWritten++;
-        detectorsFired.add(label.detectorId);
+      // Defense in depth: never extract a forced-but-excluded file
+      if (isExcluded(absPath, policy)) continue;
+
+      let content;
+      try {
+        content = fs.readFileSync(absPath, 'utf8');
+      } catch {
+        // File unreadable (permissions, binary) — skip
+        continue;
       }
-    }
-    fileNodeMaps.set(relPath, nameMap);
-    filesToProcess.push({ relPath, hash, extracted });
-  }
 
-  // Second pass: insert edges now that all fileNodeMaps are populated
-  for (const { relPath, hash, extracted } of filesToProcess) {
-    const fileNodeMap = fileNodeMaps.get(relPath) || new Map();
+      const hash = hashContent(content);
+      const existingHash = forced ? null : db.getFileHash(project, relPath);
 
-    for (const edge of extracted.edges) {
-      // Resolve source node ID
-      let sourceId = fileNodeMap.get(edge.source);
-      if (sourceId == null) {
-        // Fall back to module node (first entry = lowest id)
-        const first = fileNodeMap.values().next();
-        sourceId = first.done ? null : first.value;
+      if (!forced && existingHash === hash) {
+        filesSkipped++;
+        // Load existing node map from DB for edge resolution
+        const existingNodes = db.db.prepare(
+          'SELECT name, id FROM nodes WHERE project = ? AND file = ? ORDER BY id'
+        ).all(project, relPath);
+        const nameMap = new Map();
+        for (const n of existingNodes) nameMap.set(n.name, n.id);
+        fileNodeMaps.set(relPath, nameMap);
+        continue;
       }
-      if (sourceId == null) continue;
 
-      // Resolve target node ID
-      let targetId = null;
+      filesScanned++;
+      const extracted = registry.extractFile(content, relPath, project);
 
-      if (edge.type === 'imports') {
-        // target is a relative path like './lib/utils'
-        const resolved = resolveImportPath(relPath, edge.target, rootPath);
-        const candidates = [resolved, resolved + '.js', path.join(resolved, 'index.js')];
+      // Register edge types declared by this extractor
+      for (const et of extracted.edge_types || []) {
+        db.registerEdgeType(et);
+      }
 
-        for (const candidate of candidates) {
-          const targetMap = fileNodeMaps.get(candidate);
-          if (targetMap && targetMap.size > 0) {
-            targetId = targetMap.values().next().value;
-            break;
-          }
-        }
+      // Clear stale nodes/edges
+      db.deleteFileEdges(project, relPath);
+      db.deleteFileNodes(project, relPath);
 
-        if (targetId == null) {
-          // Create a stub module node for unresolvable import
-          const targetFile = resolved.endsWith('.js') ? resolved : resolved + '.js';
-          const stubName = path.basename(targetFile);
-          targetId = db.upsertNode({
-            project,
-            file: targetFile,
-            name: stubName,
-            type: 'module',
-            line: 1,
+      // Insert new nodes; build name→id map for this file
+      const nameMap = new Map();
+      const fileExt = path.extname(relPath);
+      const extractorMod = registry.getExtractor(fileExt);
+      for (const node of extracted.nodes) {
+        const id = db.upsertNode(node);
+        if (!nameMap.has(node.name)) nameMap.set(node.name, id);
+        nodesCreated++;
+
+        // Compute and store body_hash; follow-up UPDATE acceptable for v1 simplicity
+        const body = extractorMod && typeof extractorMod.extractBody === 'function'
+          ? extractorMod.extractBody(content, node)
+          : null;
+        node.body = body; // in-memory transient; not persisted to DB
+        const hash = bodyHash(body);
+        db.setNodeBodyHash(id, hash);
+
+        // Run heuristic detectors and write labels
+        const nodeLabels = runDetectorsForNode(extractorMod || {}, node, { project, filePath: relPath, content });
+        for (const label of nodeLabels) {
+          db.upsertLabel({
+            nodeId: id,
+            detectorId: label.detectorId,
+            term: label.term,
+            category: label.category,
+            descriptors: label.descriptors,
+            confidence: label.confidence,
+            source: 'heuristic',
+            bodyHashAtLabel: hash,
           });
-          if (!fileNodeMaps.has(targetFile)) fileNodeMaps.set(targetFile, new Map());
-          if (!fileNodeMaps.get(targetFile).has(stubName)) {
-            fileNodeMaps.get(targetFile).set(stubName, targetId);
-          }
+          labelsWritten++;
+          detectorsFired.add(label.detectorId);
         }
-      } else {
-        // Look up target in current file first
-        targetId = fileNodeMap.get(edge.target);
+      }
+      fileNodeMaps.set(relPath, nameMap);
+      filesToProcess.push({ relPath, hash, extracted });
+    }
 
-        if (targetId == null) {
-          // Search all files in this project
-          for (const [, nodeMap] of fileNodeMaps) {
-            if (nodeMap.has(edge.target)) {
-              targetId = nodeMap.get(edge.target);
+    // Second pass: insert edges now that all fileNodeMaps are populated
+    for (const { relPath, hash, extracted } of filesToProcess) {
+      const fileNodeMap = fileNodeMaps.get(relPath) || new Map();
+
+      for (const edge of extracted.edges) {
+        // Resolve source node ID
+        let sourceId = fileNodeMap.get(edge.source);
+        if (sourceId == null) {
+          // Fall back to module node (first entry = lowest id)
+          const first = fileNodeMap.values().next();
+          sourceId = first.done ? null : first.value;
+        }
+        if (sourceId == null) continue;
+
+        // Resolve target node ID
+        let targetId = null;
+
+        if (edge.type === 'imports') {
+          // target is a relative path like './lib/utils'
+          const resolved = resolveImportPath(relPath, edge.target, rootPath);
+          const candidates = [resolved, resolved + '.js', path.join(resolved, 'index.js')];
+
+          for (const candidate of candidates) {
+            const targetMap = fileNodeMaps.get(candidate);
+            if (targetMap && targetMap.size > 0) {
+              targetId = targetMap.values().next().value;
               break;
             }
           }
+
+          if (targetId == null) {
+            // Create a stub module node for unresolvable import
+            const targetFile = resolved.endsWith('.js') ? resolved : resolved + '.js';
+            const stubName = path.basename(targetFile);
+            targetId = db.upsertNode({
+              project,
+              file: targetFile,
+              name: stubName,
+              type: 'module',
+              line: 1,
+            });
+            if (!fileNodeMaps.has(targetFile)) fileNodeMaps.set(targetFile, new Map());
+            if (!fileNodeMaps.get(targetFile).has(stubName)) {
+              fileNodeMaps.get(targetFile).set(stubName, targetId);
+            }
+          }
+        } else {
+          // Look up target in current file first
+          targetId = fileNodeMap.get(edge.target);
+
+          if (targetId == null) {
+            // Search all files in this project
+            for (const [, nodeMap] of fileNodeMaps) {
+              if (nodeMap.has(edge.target)) {
+                targetId = nodeMap.get(edge.target);
+                break;
+              }
+            }
+          }
+
+          if (targetId == null) {
+            // Create a stub node
+            const stubType = edge.type === 'queries_table' ? 'table' : 'stub';
+            targetId = db.upsertNode({
+              project,
+              file: relPath,
+              name: edge.target,
+              type: stubType,
+              line: null,
+            });
+            fileNodeMap.set(edge.target, targetId);
+          }
         }
 
-        if (targetId == null) {
-          // Create a stub node
-          const stubType = edge.type === 'queries_table' ? 'table' : 'stub';
-          targetId = db.upsertNode({
-            project,
-            file: relPath,
-            name: edge.target,
-            type: stubType,
-            line: null,
+        if (targetId == null) continue;
+
+        try {
+          db.insertEdge({
+            sourceId,
+            targetId,
+            type: edge.type,
+            category: edge.category,
+            sourceProject: edge.sourceProject || project,
+            sourceFile: edge.sourceFile || relPath,
+            data: edge.data || null,
+            sequence: edge.sequence || null,
           });
-          fileNodeMap.set(edge.target, targetId);
+          edgesCreated++;
+        } catch {
+          // Skip duplicates or constraint errors
         }
       }
 
-      if (targetId == null) continue;
-
-      try {
-        db.insertEdge({
-          sourceId,
-          targetId,
-          type: edge.type,
-          category: edge.category,
-          sourceProject: edge.sourceProject || project,
-          sourceFile: edge.sourceFile || relPath,
-          data: edge.data || null,
-          sequence: edge.sequence || null,
-        });
-        edgesCreated++;
-      } catch {
-        // Skip duplicates or constraint errors
-      }
+      db.setFileHash(project, relPath, hash);
     }
 
-    db.setFileHash(project, relPath, hash);
-  }
-
-  return { filesScanned, filesSkipped, nodesCreated, edgesCreated, labelsWritten, detectorCount: detectorsFired.size };
+    db.setExclusionState(project, policy.hash);
+    result = { filesScanned, filesSkipped, nodesCreated, edgesCreated, labelsWritten, detectorCount: detectorsFired.size };
+  });
+  txn();
+  return result;
 }
 
-function scanProject(projectDir, projectName, graphDb) {
-  return extractFiles({ db: graphDb, project: projectName, rootPath: projectDir });
+function scanProject(projectDir, projectName, graphDb, config) {
+  return extractFiles({ db: graphDb, project: projectName, rootPath: projectDir, config });
 }
 
 function discoverProjects(workspaceDir) {
@@ -458,9 +471,11 @@ function main() {
   const db = new GraphDB(dbPath);
   let totalScanned = 0, totalSkipped = 0, totalNodes = 0, totalEdges = 0;
 
+  const config = loadConfig();
+
   for (const { dir, name } of pairs) {
     process.stdout.write(`Scanning ${name} (${dir})...\n`);
-    const stats = scanProject(dir, name, db);
+    const stats = scanProject(dir, name, db, config);
     db.setProjectRoot(name, dir);
     process.stdout.write(`  ${stats.filesScanned} scanned, ${stats.filesSkipped} skipped, ${stats.nodesCreated} nodes, ${stats.edgesCreated} edges\n`);
     if (stats.labelsWritten > 0) {
@@ -472,8 +487,7 @@ function main() {
     totalEdges += stats.edgesCreated;
   }
 
-  // Scan watch_directories from config
-  const config = loadConfig();
+  // Reuse the already-loaded config for watch_directories.
   const watchDirs = config.watch_directories || [];
   if (watchDirs.length > 0) {
     process.stdout.write(`\nScanning ${watchDirs.length} watch director${watchDirs.length === 1 ? 'y' : 'ies'}...\n`);
