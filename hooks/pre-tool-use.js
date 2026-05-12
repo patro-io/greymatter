@@ -152,6 +152,15 @@ function main() {
         // Pre-write: dedupe against orientation emissions.
         for (const sig of mq.getPreWriteSignalsForFile(filePath)) {
           if (emittedIds.has(sig.id)) continue;
+          // Edit tool operates with explicit old/new strings — it IS a targeted
+          // edit by definition. Whole-file-rewrite reminders (e.g. seed signal
+          // "Prefer targeted edits over whole-file rewrites") apply only to
+          // Write, not Edit/MultiEdit. Skip them on Edit/MultiEdit to avoid
+          // banner noise on every surgical change.
+          if ((toolName === 'Edit' || toolName === 'MultiEdit')
+              && /targeted edits|whole-file rewrites/i.test(sig.label || '')) {
+            continue;
+          }
           preWriteSignals.push(sig);
           emittedIds.add(sig.id);
         }
