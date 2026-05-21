@@ -149,6 +149,17 @@ function main() {
           }
         }
 
+        // For `Write` to a non-existent path, "prefer Edit over Write" signals
+        // don't apply — Write is the only option for new files. Suppress them
+        // to avoid noise on every greenfield file creation.
+        let fileExists = true;
+        try { fs.accessSync(filePath); } catch { fileExists = false; }
+        const isNewFileWrite = toolName === 'Write' && !fileExists;
+        const isEditOverWriteSignal = (sig) => {
+          const text = `${sig.label || ''} ${sig.description || ''}`.toLowerCase();
+          return /\btargeted edits?\b|\bwhole-file rewrite|\bprefer\b.{0,30}\bedit\b/.test(text);
+        };
+
         // Pre-write: dedupe against orientation emissions.
         for (const sig of mq.getPreWriteSignalsForFile(filePath)) {
           if (emittedIds.has(sig.id)) continue;
@@ -161,6 +172,9 @@ function main() {
               && /targeted edits|whole-file rewrites/i.test(sig.label || '')) {
             continue;
           }
+          // Same signal on Write of a NEW file is also redundant — Edit isn't
+          // possible against a non-existent path, Write is the only option.
+          if (isNewFileWrite && isEditOverWriteSignal(sig)) continue;
           preWriteSignals.push(sig);
           emittedIds.add(sig.id);
         }

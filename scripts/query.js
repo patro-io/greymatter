@@ -37,8 +37,16 @@ function formatFind(results) {
   }).join('\n');
 }
 
-function formatBlastRadius(dependents, file) {
+function formatBlastRadius(dependents, file, opts) {
+  const inGraph = opts && opts.inGraph;
+  const onDisk = opts && opts.onDisk;
   if (!dependents || dependents.length === 0) {
+    if (onDisk && !inGraph) {
+      // File exists on disk but graph has no nodes for it — graph is stale
+      // (file written this session, not yet re-scanned). "Nothing depends on"
+      // is misleading; report the staleness explicitly so caller can re-scan.
+      return `(graph stale — "${file}" exists on disk but is not yet indexed; rescan to see dependents)`;
+    }
     return `(nothing depends on "${file}")`;
   }
   const lines = [`Blast radius for ${file}:`];
@@ -394,7 +402,14 @@ function main() {
       if (!file) { process.stderr.write('--blast-radius requires a file path\n'); process.exit(1); }
       const project = projectFlag || queries.listProjects()[0];
       const radius = queries.getBlastRadius(project, file);
-      process.stdout.write(formatBlastRadius(radius, file) + '\n');
+      // Stale-graph detection: if file has zero nodes in graph but exists on
+      // disk (e.g., written this session, not yet re-scanned), say so explicitly
+      // — empty `radius` would otherwise format as "nothing depends on", which
+      // is indistinguishable from genuine no-consumers case.
+      const inGraph = queries.getFileNodes(project, file).length > 0;
+      let onDisk = false;
+      try { require('fs').accessSync(file); onDisk = true; } catch { /* fall through */ }
+      process.stdout.write(formatBlastRadius(radius, file, { inGraph, onDisk }) + '\n');
 
     } else if (command === '--flow') {
       const file = positional(args, '--flow');
