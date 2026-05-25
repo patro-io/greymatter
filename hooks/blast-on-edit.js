@@ -29,16 +29,25 @@
 // /root/.claude/hooks/greymatter-blast-on-edit.js into pefen-stack fork. Adds
 // GENERIC_BASENAMES + SKIP_PATH_PATTERNS filters to reduce noise on planning
 // markdown and generic config filenames.
+//
+// 2026-05-25 (v0.1.1): per-session dedup cache. Identical (file, blast, grep)
+// shape only emitted once per session — repeated edits to same file that don't
+// change the dependency picture silent-skip. Cache dir per session under
+// tmpdir, 24h TTL purge on each call. Reason: 4× Edit to same skill file was
+// firing 4× identical blast-radius output, just noise after the first hit.
 
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
+const os = require('node:os');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.join(__dirname, '..');
 const QUERY = path.join(PLUGIN_ROOT, 'scripts/query.js');
 const GREP = path.join(PLUGIN_ROOT, 'scripts/grep.js');
 const TIMEOUT_MS = 4000;
 const MAX_CONTEXT_CHARS = 1200;
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;  // 24h — purge stale session dirs
 
 // Generic config / convention filenames that appear in every project's docs
 // and skill instructions. Textual grep on these produces noise (e.g. "use
@@ -65,6 +74,38 @@ const SKIP_PATH_PATTERNS = [
 
 function readStdin() {
   try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
+}
+
+// Per-session dedup: identical (file, blast, grep) shape only emitted once.
+// Cache file = sha256(rel + blast + grep). Subsequent edits to same file that
+// don't change the dependency picture silent-skip — agent already has it.
+// Cache dir per session under tmpdir; opportunistic 24h TTL purge.
+function cacheHitAndMark(sessionId, rel, blast, grep) {
+  if (!sessionId) return false;  // no session id → no dedup, original behavior
+  const cacheDir = path.join(os.tmpdir(), `greymatter-blast-cache-${sessionId}`);
+  try { fs.mkdirSync(cacheDir, { recursive: true }); } catch { return false; }
+
+  // Opportunistic purge of stale sibling session dirs (cheap, runs on each call
+  // but fs.readdirSync of tmpdir is fast and we only stat our prefix).
+  try {
+    const now = Date.now();
+    for (const name of fs.readdirSync(os.tmpdir())) {
+      if (!name.startsWith('greymatter-blast-cache-')) continue;
+      const p = path.join(os.tmpdir(), name);
+      try {
+        const st = fs.statSync(p);
+        if (now - st.mtimeMs > CACHE_TTL_MS) fs.rmSync(p, { recursive: true, force: true });
+      } catch {}
+    }
+  } catch {}
+
+  const key = crypto.createHash('sha256')
+    .update(`${rel}\n${blast || ''}\n${grep || ''}`)
+    .digest('hex').slice(0, 16);
+  const cacheFile = path.join(cacheDir, key);
+  if (fs.existsSync(cacheFile)) return true;
+  try { fs.writeFileSync(cacheFile, ''); } catch {}
+  return false;
 }
 
 function safeRun(args) {
@@ -153,6 +194,12 @@ function main() {
   }
 
   if (!blast && !grep) return;
+
+  // Dedup: silent skip if this exact (file, blast, grep) shape was already
+  // emitted in this session. Editing same file multiple times without changing
+  // its dependency picture = no value in re-injecting identical context.
+  const sessionId = event.session_id || process.env.CLAUDE_SESSION_ID || null;
+  if (cacheHitAndMark(sessionId, rel, blast, grep)) return;
 
   const parts = [];
   parts.push(`greymatter: post-edit dependency check on \`${proj.name}/${rel}\``);

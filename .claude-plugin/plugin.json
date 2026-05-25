@@ -1,5 +1,5 @@
 {
   "name": "greymatter",
   "description": "Unified code + documentation knowledge graph with conversation recall, behavioral signals, and safety hooks",
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
