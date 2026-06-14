@@ -1,5 +1,14 @@
 {
   "name": "greymatter",
   "description": "Unified code + documentation knowledge graph with conversation recall, behavioral signals, and safety hooks",
-  "version": "0.1.1"
+  "version": "0.1.2",
+  "mcpServers": {
+    "greymatter": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.js"],
+      "env": {
+        "NODE_PATH": "${CLAUDE_PLUGIN_DATA}/node_modules"
+      }
+    }
+  }
 }
