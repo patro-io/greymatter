@@ -140,6 +140,28 @@ describe('Astro Extractor', () => {
     assert.ok(result.nodes.find(n => n.type === 'component'));
   });
 
+  it('does not extract nested object members as top-level props', () => {
+    // Regression: depth check `=== 1` (not `> 0`) — nested types must not bubble up.
+    const result = extractor.extract(
+      "---\ninterface Props {\n  user: {\n    name: string;\n    age: number;\n  };\n  title: string;\n}\n---\n",
+      'src/components/Card.astro', 'p'
+    );
+    const propNames = result.nodes.filter(n => n.type === 'prop').map(p => p.name).sort();
+    assert.deepEqual(propNames, ['title', 'user'], 'only top-level Props members');
+  });
+
+  it('handles CRLF line endings in frontmatter', () => {
+    // Regression: closing-fence regex tolerates trailing \r left by split('\n') on CRLF files.
+    const result = extractor.extract(
+      "---\r\nimport Card from './Card.astro';\r\nconst { title } = Astro.props;\r\n---\r\n<h1>x</h1>\r\n",
+      'src/pages/index.astro', 'p'
+    );
+    const imports = result.edges.filter(e => e.type === 'imports');
+    assert.ok(imports.some(e => e.target === './Card.astro'), 'import detected under CRLF');
+    const propNames = result.nodes.filter(n => n.type === 'prop').map(p => p.name);
+    assert.ok(propNames.includes('title'), 'prop detected under CRLF');
+  });
+
   it('does not duplicate same import', () => {
     const result = extractor.extract(
       "---\nimport Card from './Card.astro';\nimport Card2 from './Card.astro';\n---\n",

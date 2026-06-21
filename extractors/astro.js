@@ -18,7 +18,7 @@ function extractFrontmatter(content) {
   const lines = content.split('\n');
   let endIdx = -1;
   for (let i = 1; i < lines.length; i++) {
-    if (/^---[ \t]*$/.test(lines[i])) {
+    if (/^---[ \t]*\r?$/.test(lines[i])) {
       endIdx = i;
       break;
     }
@@ -90,9 +90,11 @@ function extract(content, filePath, project) {
       if (inPropsInterface) {
         const opens = (line.match(/\{/g) || []).length;
         const closes = (line.match(/\}/g) || []).length;
-        propsInterfaceDepth += opens - closes;
+        // Capture top-level members BEFORE updating depth — a member line starts
+        // at the depth its enclosing scope is at (1 for top-level Props), and may
+        // itself open a nested type on the same line that pushes depth to 2.
         const propMatch = trimmed.match(/^(\w+)\??\s*:/);
-        if (propMatch && propsInterfaceDepth > 0) {
+        if (propMatch && propsInterfaceDepth === 1) {
           const propName = propMatch[1];
           if (!seenProps.has(propName)) {
             seenProps.add(propName);
@@ -104,6 +106,7 @@ function extract(content, filePath, project) {
             });
           }
         }
+        propsInterfaceDepth += opens - closes;
         if (propsInterfaceDepth <= 0) inPropsInterface = false;
         continue;
       }
