@@ -223,7 +223,11 @@ function extractFiles({ db, project, rootPath, forceFiles = null, extractorsDir,
           // Look up target in current file first
           targetId = fileNodeMap.get(edge.target);
 
-          if (targetId == null) {
+          // `exports` edges target current-file symbols by definition. Falling
+          // back to a global name lookup creates phantom cross-file edges when
+          // multiple files export the same name (e.g. every Astro page exports
+          // `prerender`/`GET` — global lookup binds them all to the first match).
+          if (targetId == null && edge.type !== 'exports') {
             // Search all files in this project
             for (const [, nodeMap] of fileNodeMaps) {
               if (nodeMap.has(edge.target)) {
