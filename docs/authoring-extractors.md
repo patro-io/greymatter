@@ -103,6 +103,7 @@ The test-map alert feature (`scripts/test-alerts.js` / `/test-map`) cross-refere
 | `typescript.js` | ✅ | Same conventions as JS; extends to `.ts` / `.tsx`. |
 | `python.js` | ✅ | `# @tests` annotations; `test_<name>.py`, `<name>_test.py`, `tests/` mirror, src-layout aware. |
 | `svelte.js` | ✅ | Cross-extension: pairs `Foo.svelte` with `Foo.test.{ts,js}` siblings, `__tests__/`, `test(s)/`, and flattened-parent `test(s)/<parent>-<name>.test.{ts,js}`. Annotations go inside `<script>` blocks (`// @tests`). |
+| `astro.js` | ✅ | Cross-extension: pairs `Foo.astro` with `Foo.test.{ts,js}` siblings, `__tests__/`, `test(s)/`, and flattened-parent variants. Annotations go inside the frontmatter (`// @tests`). |
 | `markdown.js` | ❌ (intentional) | Markdown has no conventional source↔test pairing. Flagging every doc as `missing_test` would be noise. |
 
 ```js
@@ -383,3 +384,7 @@ module.exports = { extensions: ['.mylang'], extract, testPairs };
 ```
 
 Drop that file into `extractors/`, add a `test/mylang-extractor.test.js`, and you're participating in the graph and the test-map alerts.
+
+## Known gaps — extractors we want
+
+_(none currently tracked — open a PR or note one here when found)_
