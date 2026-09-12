@@ -15,10 +15,25 @@ DATA="${CLAUDE_PLUGIN_DATA:-}"
 case "$DATA" in ''|*'${'*) DATA="$HOME/.claude/plugins/data/greymatter-greymatter" ;; esac
 
 mkdir -p "$DATA"
-diff -q "$ROOT/package.json" "$DATA/package.json" >/dev/null 2>&1 && exit 0
 
-# Repo checkout / full install already ships node_modules — nothing to do.
-if [ -f "$ROOT/node_modules/better-sqlite3/package.json" ]; then
+# The marker is DATA/package.json, and it may only be trusted when DATA actually holds
+# a usable tree. Checking the marker alone was a silent permanent break (measured
+# 2026-09-12): running from a repo checkout took the shortcut below, stamped the marker,
+# and installed nothing into DATA — because the checkout's own entrypoints resolve
+# through ROOT/../node_modules and do not need DATA at all. Every later run, including
+# the cache install that resolves ONLY through DATA, then found a matching marker and
+# exited early. Result: the MCP server never got its dependencies and failed to connect
+# for good, with no error anywhere, because bootstrap reported success every time.
+if diff -q "$ROOT/package.json" "$DATA/package.json" >/dev/null 2>&1 \
+   && [ -f "$DATA/node_modules/better-sqlite3/package.json" ]; then
+  exit 0
+fi
+
+# Repo checkout / full install already ships node_modules — nothing to do, but ONLY
+# once DATA is populated too. While DATA is still empty there is real work left: the
+# cache-installed MCP server and hooks cannot see the checkout's tree.
+if [ -f "$ROOT/node_modules/better-sqlite3/package.json" ] \
+   && [ -f "$DATA/node_modules/better-sqlite3/package.json" ]; then
   cp "$ROOT/package.json" "$DATA/package.json"
   exit 0
 fi

@@ -8,7 +8,7 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap-deps.sh\"",
             "async": false,
-            "timeout": 180000
+            "timeout": 180
           }
         ]
       },
