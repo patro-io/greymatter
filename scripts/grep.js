@@ -11,6 +11,7 @@ const os = require('os');
 const { GraphDB } = require('../lib/graph-db');
 const { UnknownProjectError } = require('../lib/mcp/errors');
 const { isExcluded } = require('../lib/exclusion');
+const { collectFiles } = require('../lib/file-walker');
 
 const DEFAULT_DB = path.join(os.homedir(), '.claude', 'greymatter', 'graph.db');
 
@@ -40,9 +41,11 @@ function searchFile(filePath, regex, ctx, maxPerFile) {
 }
 
 /**
- * Search greymatter's scanned file set for a project.
- * Uses project_scan_state (root_path) and file_hashes to resolve the file set —
- * no filesystem globbing.
+ * Search a project's text files.
+ * Uses project_scan_state (root_path) to locate the project, then searches the UNION
+ * of indexed files (file_hashes) and text files found on disk under that root. The
+ * disk half is what makes languages without an extractor searchable — see the comment
+ * on the file set below.
  *
  * @param {import('../lib/graph-db').GraphDB} graphDb
  * @param {string} project
@@ -71,8 +74,26 @@ function grepProject(graphDb, project, pattern, options = {}) {
   try { regex = new RegExp(pattern); }
   catch (err) { throw new Error(`Invalid regex: ${err.message}`); }
 
+  // File set = indexed files UNION text files on disk.
+  //
+  // Indexed alone was the bug (measured 2026-09-12): file_hashes only ever holds files
+  // an extractor handled, so a language with no extractor is invisible here — and grep
+  // is exactly the half that is supposed to cover what the import graph cannot. In the
+  // devstack project that meant 0 of ~70 shell scripts were searchable: a query for
+  // `ph_session_busy` returned one .md hit and missed the four .sh files that define
+  // and use it. An empty result reads as "nothing references this", so the omission
+  // did not look like a gap — it looked like an answer.
+  //
+  // Disk alone would regress the other way: collectFiles only walks TEXT_EXTENSIONS,
+  // and an extractor may index a type that set does not list. The union is a superset
+  // of both and keeps every file the graph knows about.
+  const relFiles = new Set(fileRows.map(r => r.file));
+  for (const absPath of collectFiles(root_path, { policy })) {
+    relFiles.add(path.relative(root_path, absPath));
+  }
+
   const results = [];
-  for (const { file: relFile } of fileRows) {
+  for (const relFile of [...relFiles].sort()) {
     const absPath = path.join(root_path, relFile);
     if (policy && isExcluded(absPath, policy)) continue;
     const matches = searchFile(absPath, regex, context, maxPerFile);

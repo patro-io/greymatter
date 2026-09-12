@@ -229,4 +229,38 @@ describe('grepProject library', () => {
     assert.ok(!files.includes('lib/fileA.js'), 'excluded file should not appear in results');
     assert.ok(files.includes('lib/fileB.js'), 'included file should still appear');
   });
+
+  // Regression, measured 2026-09-12. grepProject used file_hashes as the file set, so a
+  // language with no extractor never entered it and was unsearchable — while grep is the
+  // half that is meant to cover what the import graph cannot. In the devstack project 0 of
+  // ~70 shell scripts were searchable: one .md hit came back and four .sh files that use
+  // the identifier were missed. An empty result reads as "nothing references this", so the
+  // blind spot looked like an answer rather than a gap.
+  it('finds files with no extractor (not in file_hashes)', () => {
+    fs.writeFileSync(path.join(root, 'lib', 'deploy.sh'), '#!/bin/bash\nverifyToken "$1"\n');
+    fs.writeFileSync(path.join(root, 'lib', 'config.yml'), 'check: verifyToken\n');
+    // Deliberately NOT registered via setFileHash — that is the whole point.
+    const files = grepProject(db, 'p1', 'verifyToken').map(r => r.file);
+    assert.ok(files.includes('lib/deploy.sh'), 'shell file must be searchable without an extractor');
+    assert.ok(files.includes('lib/config.yml'), 'yaml file must be searchable without an extractor');
+    assert.ok(files.includes('lib/fileA.js'), 'indexed files must still be searched');
+  });
+
+  it('keeps indexed files that are not text-walked', () => {
+    // The disk walk only covers TEXT_EXTENSIONS. An extractor may index a type that set
+    // does not list, so the union must keep it — replacing the DB set with a walk would
+    // have traded this bug for its mirror image.
+    fs.writeFileSync(path.join(root, 'lib', 'view.exotic'), 'verifyToken()\n');
+    db.setFileHash('p1', 'lib/view.exotic', 'hashX');
+    const files = grepProject(db, 'p1', 'verifyToken').map(r => r.file);
+    assert.ok(files.includes('lib/view.exotic'), 'indexed non-text-extension file must still be searched');
+  });
+
+  it('policy still excludes a file found only by the disk walk', () => {
+    const { loadPolicy } = require('../lib/exclusion');
+    fs.writeFileSync(path.join(root, 'lib', 'secret.sh'), 'verifyToken secret\n');
+    const policy = loadPolicy(root, { exclusion: { extra_patterns: ['lib/secret.sh'] } });
+    const files = grepProject(db, 'p1', 'verifyToken', { policy }).map(r => r.file);
+    assert.ok(!files.includes('lib/secret.sh'), 'exclusion must apply to disk-walked files too');
+  });
 });
