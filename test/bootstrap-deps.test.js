@@ -106,4 +106,54 @@ describe('bootstrap-deps.sh marker discipline', () => {
     const cache = makeRoot('cache-only', false);
     assert.doesNotThrow(() => run(cache), 'hook must exit 0 even when it cannot install');
   });
+
+  // Regression, measured 2026-09-12. Two sessions starting at once ran this hook twice
+  // within the same second and both staged into the same `.staging` path — npm logs show
+  // one run `exit 0` and the other `exit -39` on the identical cwd. Each run's
+  // `rm -rf "$STAGE"` wiped the other's tree mid-install, so both finished with nothing
+  // and DATA stayed empty. The user had reinstalled the plugin and restarted the session
+  // and the MCP server was still dependency-less, because the failure is a race: it hit
+  // 2 of 3 attempts before the fix, and looked like "sometimes it works".
+  it('two concurrent runs still populate DATA exactly once', () => {
+    // Succeeding fake npm — writes the tree the real install would produce. Keeps the
+    // test offline, and slow enough that the two runs genuinely overlap.
+    const bin = path.join(tmp, 'bin');
+    fs.writeFileSync(path.join(bin, 'npm'), [
+      '#!/bin/sh',
+      'sleep 0.4',
+      'mkdir -p node_modules/better-sqlite3',
+      'printf \'{"name":"better-sqlite3"}\' > node_modules/better-sqlite3/package.json',
+      'mkdir -p node_modules/@modelcontextprotocol/sdk',
+      'printf \'{"name":"@modelcontextprotocol/sdk"}\' > node_modules/@modelcontextprotocol/sdk/package.json',
+      'exit 0',
+    ].join('\n'));
+    fs.chmodSync(path.join(bin, 'npm'), 0o755);
+    // The load check runs `node -e "require(...)"` against the staged tree; the stub
+    // packages above are not loadable, so point it at a node that just succeeds.
+    fs.writeFileSync(path.join(bin, 'node'), '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(path.join(bin, 'node'), 0o755);
+
+    const cache = makeRoot('cache-race', false);
+    const script = path.join(cache, 'hooks', 'bootstrap-deps.sh');
+    const env = { ...process.env, CLAUDE_PLUGIN_DATA: data, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+
+    // The second run is launched mid-install, not simultaneously. Firing both at once
+    // is a coin flip — whichever finishes last swaps in a good tree and the test passes
+    // on broken code (measured: caught it only ~3 times in 5). Staggering by 0.2s while
+    // the fake install takes 0.4s puts the second run's `rm -rf` squarely inside the
+    // first one's window, which is the real-world case: two sessions starting seconds
+    // apart. Three rounds, because timing on a loaded machine still drifts.
+    for (let round = 1; round <= 3; round++) {
+      fs.rmSync(data, { recursive: true, force: true });
+      execFileSync('bash', ['-c',
+        `bash "${script}" >/dev/null 2>&1 & sleep 0.2; bash "${script}" >/dev/null 2>&1 & wait`,
+      ], { env, encoding: 'utf8' });
+
+      assert.equal(dataHasTree(), true,
+        `round ${round}: concurrent runs must not destroy each other — DATA has to end up populated`);
+      const leftovers = fs.readdirSync(data).filter(n => n.startsWith('.staging') || n === '.bootstrap.lock');
+      assert.deepEqual(leftovers, [],
+        `round ${round}: lock and staging dirs must be cleaned up; a leaked lock stalls every later run`);
+    }
+  });
 });

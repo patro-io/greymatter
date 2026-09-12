@@ -51,12 +51,12 @@
           {
             "type": "command",
             "command": "NODE_PATH=\"${CLAUDE_PLUGIN_DATA}/node_modules\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.js\"",
-            "timeout": 10000
+            "timeout": 10
           },
           {
             "type": "command",
             "command": "NODE_PATH=\"${CLAUDE_PLUGIN_DATA}/node_modules\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/blast-on-edit.js\"",
-            "timeout": 5000
+            "timeout": 5
           }
         ]
       }

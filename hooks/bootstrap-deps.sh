@@ -38,7 +38,32 @@ if [ -f "$ROOT/node_modules/better-sqlite3/package.json" ] \
   exit 0
 fi
 
-STAGE="$DATA/.staging"
+# Concurrency. Two sessions starting at once run this hook twice within the same second,
+# and both used the same .staging path (measured 2026-09-12 from npm logs: one run
+# `exit 0`, the other `exit -39` on the identical cwd). Each run's `rm -rf "$STAGE"`
+# wiped the other's tree mid-install, so both finished with nothing and DATA stayed
+# empty — a plugin reinstall followed by a session restart still left the MCP server
+# without dependencies, and the hook reported success both times.
+#
+# Lock first (mkdir is atomic), then stage under a per-process path so two runs can
+# never share a directory even if the lock is ever bypassed.
+LOCK="$DATA/.bootstrap.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # Fresh lock: another run owns the install. Leave it alone — it either finishes, or
+  # the marker stays unwritten and the next session retries. Stale lock (killed run,
+  # older than 10 minutes): take it over, otherwise one crash blocks bootstrap forever.
+  if [ -z "$(find "$LOCK" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
+    exit 0
+  fi
+  rm -rf "$LOCK"
+  mkdir "$LOCK" 2>/dev/null || exit 0
+fi
+
+STAGE="$DATA/.staging.$$"
+# Release the lock and drop the staging tree on every exit path, including the early
+# `exit 0`s below — a leaked lock would stall bootstrap for ten minutes at a time.
+trap 'rm -rf "$STAGE" "$LOCK"' EXIT
+
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp "$ROOT/package.json" "$STAGE/" || exit 0
