@@ -9,7 +9,7 @@
     {
       "name": "greymatter",
       "description": "Unified code + documentation knowledge graph with conversation recall, behavioral signals, and safety hooks",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "source": "./",
       "author": {
         "name": "Advenire Consulting",

@@ -131,9 +131,11 @@ Verbatim conversation recall — reasoning, rejected alternatives, the actual ba
 
 ### Search
 
-    node $PLUGIN_ROOT/scripts/search.js "term1,term2" "term3" [--limit N]
+    node $PLUGIN_ROOT/scripts/search.js "term1,term2" "term3" [--limit N] [--project <name>]
 
 Terms within quotes are comma-separated OR. Separate arguments are additive clusters.
+
+**`--project` (0.1.9+) — use it when you are orienting in one repo.** The recall index spans every project at once, so a generic term picks up decisions from wherever they were made: "gate" or "plugin" pulled 13 digests from an unrelated repo during one devstack orientation, and a priming step reads as project context while describing someone else's work. The filter keeps only windows that touched a file under the project's recorded root (from `graph.db`), anchored on a path separator so `patro` never matches `patro-cms`. A project with no recorded root prints a note and searches everything — an empty result would read as "we never discussed this".
 
 ### Read Window — granularity ladder
 
